@@ -1,8 +1,6 @@
 package server
 
 import (
-	"time"
-
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
 )
@@ -12,7 +10,7 @@ import (
 type muxConn struct {
 	netpoll.Connection
 	wqueue *mux.ShardQueue // use for write
-	Ts     time.Time
+	// Ts     time.Time
 }
 
 // var ShardSize int
@@ -34,7 +32,12 @@ func newMuxConn(conn netpoll.Connection) *muxConn {
 	mc := &muxConn{
 		Connection: conn,
 		wqueue:     mux.NewShardQueue(mux.ShardSize, conn),
-		Ts:         time.Now(),
+		// Ts:         time.Now(),
 	}
 	return mc
+}
+
+type RoleConn struct {
+	Role int8
+	*muxConn
 }

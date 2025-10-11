@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudwego/netpoll"
@@ -10,8 +11,8 @@ import (
 
 type Session struct {
 	DeviceID    string
-	Sender      *muxConn
-	Receiver    *muxConn
+	Sender      netpoll.Connection
+	Receiver    netpoll.Connection
 	Ready       bool
 	ReadyChan   chan struct{}
 	DataChan    chan []byte
@@ -20,8 +21,9 @@ type Session struct {
 	ConnectTime time.Time // 记录首次连接时间
 	CloseNotify chan struct{}
 	started     bool // 标记是否已启动
-	// senderSeq   uint16
-	// receiverSeq uint16
+	senderSeq   uint32
+	receiverSeq uint32
+	// mu sync.RWMutex
 	mu spinLock
 	// look *int32
 }
@@ -29,12 +31,13 @@ type Session struct {
 func NewSession(deviceID string) *Session {
 	return &Session{
 		DeviceID: deviceID,
+		// mu:       new(spinLock),
 		// ReadyChan:   make(chan struct{}),
 		// DataChan:    make(chan []byte, 100),
 		// Timeout:     30 * time.Second,
 		// LastActive:  time.Now(),
 		// ConnectTime: time.Now(),
-		// CloseNotify: make(chan struct{}),
+		CloseNotify: make(chan struct{}),
 	}
 }
 
@@ -47,8 +50,8 @@ func (s *Session) SetSender(conn netpoll.Connection) bool {
 		return false
 	}
 
-	s.Sender = newMuxConn(conn)
 	slog.Info("Session new sender connected ", "deviceID", s.DeviceID, "time", time.Now().Format(time.RFC3339))
+	s.Sender = conn
 	// 启动超时检测
 	if !s.started {
 		go s.StartDataForward()
@@ -67,7 +70,7 @@ func (s *Session) SetReceiver(conn netpoll.Connection) bool {
 	}
 
 	slog.Info("Session new receiver connected at ", "deviceID", s.DeviceID, "time", time.Now().Format(time.RFC3339))
-	s.Receiver = newMuxConn(conn)
+	s.Receiver = conn
 	s.ConnectTime = time.Now() // 重置连接时间
 
 	// 启动超时检测
@@ -83,7 +86,7 @@ func (s *Session) SetReceiver(conn netpoll.Connection) bool {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			if s.Receiver != nil && s.Sender == nil {
-				slog.Debug("Session  「receiver」 timeout, no sender connected", "deviceId", s.DeviceID)
+				slog.Debug("Session  [receiver] timeout, no sender connected", "deviceId", s.DeviceID)
 				s.handleSingleDisconnect(s.Receiver, STATUS_TIMEOUT)
 				s.Receiver = nil
 			}
@@ -118,7 +121,7 @@ func (s *Session) StartDataForward() {
 				if len(data) > 0 && data[0] == CMD_STATUS {
 					status := data[1]
 					if status == STATUS_CLOSED {
-						fmt.Printf("Session %s received close command\n", s.DeviceID)
+						slog.Debug("Session  [received] closed command", "deviceID", s.DeviceID)
 						s.handleDisconnect(STATUS_CLOSED)
 						s.mu.Unlock()
 						return
@@ -126,15 +129,17 @@ func (s *Session) StartDataForward() {
 				}
 
 				if s.Sender != nil {
-					_, err := s.Sender.Write(data)
-					if err != nil {
+					Writer := s.Sender.Writer()
+					Writer.WriteBinary(data)
+					if err := Writer.Flush(); err != nil {
 						slog.Error("Failed to send data to sender", "error", err)
 						s.handlePeerDisconnect(s.Sender, s.Receiver, STATUS_PEER_DISCONNECT)
 					}
 				}
 				if s.Receiver != nil {
-					_, err := s.Receiver.Write(data)
-					if err != nil {
+					Writer := s.Receiver.Writer()
+					Writer.WriteBinary(data)
+					if err := Writer.Flush(); err != nil {
 						slog.Error("Failed to send data to receiver", "error", err)
 						s.handlePeerDisconnect(s.Receiver, s.Sender, STATUS_PEER_DISCONNECT)
 					}
@@ -188,25 +193,28 @@ func (s *Session) monitorTimeout() {
 			s.mu.Unlock()
 
 		case <-s.CloseNotify:
+			fmt.Println("关闭连接。。。。。。。。。。。。。。。。。。。")
 			slog.Info("Session closed", "deviceID", s.DeviceID)
 			return
 		}
 	}
 }
 
-func (s *Session) handleSingleDisconnect(muxConn *muxConn, status byte) {
-	writer := netpoll.NewLinkBuffer()
-	Encodex(writer, &StatusPacket1{
-		Status:  status,
-		CmdCode: CMD_STATUS,
-		Order:   0,
+func (s *Session) handleSingleDisconnect(muxConn netpoll.Connection, status byte) {
+	// writer := netpoll.NewLinkBuffer()
+	Encodex(muxConn.Writer(), &DatadPacket{
+		&Header{
+			CMD_STATUS,
+			0,
+		},
+		[]byte{byte(status)},
 	})
+	muxConn.Close()
+	// muxConn.Put(func() (buf netpoll.Writer, isNil bool) {
+	// 	return writer, false
+	// })
 
-	muxConn.Put(func() (buf netpoll.Writer, isNil bool) {
-		return writer, false
-	})
-
-	muxConn.clear()
+	//muxConn.clear()
 	// 清理session
 	s.Ready = false
 	close(s.CloseNotify)
@@ -216,25 +224,44 @@ func (s *Session) handleDisconnect(status byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	writer := netpoll.NewLinkBuffer()
-	// 发送状态通知
-	Encodex(writer, &StatusPacket1{
-		Status:  status,
-		CmdCode: CMD_STATUS,
-		Order:   0,
-	})
+	// writer := s.
+	// 	// 发送状态通知
+	// 	Encodex(writer, &StatusPacket1{
+	// 		Status:  status,
+	// 		CmdCode: CMD_STATUS,
+	// 		Order:   0,
+	// 	})
 	if s.Sender != nil {
-		s.Sender.Put(func() (buf netpoll.Writer, isNil bool) {
-			return writer, false
-		})
-		s.Sender.clear()
+		Encodex(s.Sender.Writer(),
+			&DatadPacket{
+				&Header{
+					CMD_STATUS,
+					0,
+				},
+				[]byte{byte(status)},
+			})
+		s.Sender.Close()
+		// s.Sender.Put(func() (buf netpoll.Writer, isNil bool) {
+		// 	return writer, false
+		// })
+		// s.Sender.clear()
 		s.Sender = nil
 	}
+
 	if s.Receiver != nil {
-		s.Receiver.Put(func() (buf netpoll.Writer, isNil bool) {
-			return writer, false
-		})
-		s.Sender.clear()
+		Encodex(s.Receiver.Writer(),
+			&DatadPacket{
+				&Header{
+					CMD_STATUS,
+					0,
+				},
+				[]byte{byte(status)},
+			})
+		s.Receiver.Close()
+		// s.Receiver.Put(func() (buf netpoll.Writer, isNil bool) {
+		// 	return writer, false
+		// })
+		// s.Sender.clear()
 		s.Receiver = nil
 	}
 
@@ -273,35 +300,39 @@ func (s *Session) monitorConnections() {
 	}
 }
 
-func (s *Session) handlePeerDisconnect(disconnectedConn, otherConn *muxConn, status byte) {
+func (s *Session) handlePeerDisconnect(disconnectedConn, otherConn netpoll.Connection, status byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// 关闭已断开的连接
 	if disconnectedConn != nil {
-		disconnectedConn.clear()
+		disconnectedConn.Close()
 		if disconnectedConn == s.Sender {
-			s.Sender.clear()
+			// s.Sender.Close()
 			s.Sender = nil
 		} else {
-			s.Receiver.clear()
+			// s.Receiver.Close()
 			s.Receiver = nil
 		}
 	}
 
 	// 通知另一端
 	if otherConn != nil {
-		writer := netpoll.NewLinkBuffer()
-		Encodex(writer, &StatusPacket1{
-			Status:  status,
-			CmdCode: STATUS_PEER_DISCONNECT,
-			Order:   0,
+		writer := otherConn.Writer()
+		// writer := netpoll.NewLinkBuffer()
+		Encodex(writer, &DatadPacket{
+			&Header{
+				STATUS_PEER_DISCONNECT,
+				0,
+			},
+			[]byte{byte(status)},
 		})
-		otherConn.Put(func() (buf netpoll.Writer, isNil bool) {
-			return writer, false
-		})
+		// otherConn.Put(func() (buf netpoll.Writer, isNil bool) {
+		// 	return writer, false
+		// })
 
-		otherConn.clear()
+		// otherConn.clear()
+		otherConn.Close()
 		if otherConn == s.Sender {
 			s.Sender = nil
 		} else {
@@ -312,4 +343,18 @@ func (s *Session) handlePeerDisconnect(disconnectedConn, otherConn *muxConn, sta
 	// 清理session
 	s.Ready = false
 	close(s.CloseNotify)
+}
+
+func (s *Session) WaitReady() <-chan struct{} {
+	return s.ReadyChan
+}
+
+// GetReceiverSeq returns the current receiver sequence number
+func (s *Session) GetReceiverSeq() uint32 {
+	return atomic.LoadUint32(&s.receiverSeq)
+}
+
+// IncrementReceiverSeq increments the receiver sequence number
+func (s *Session) IncrementReceiverSeq() {
+	atomic.AddUint32(&s.receiverSeq, 1)
 }
