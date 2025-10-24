@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -10,9 +9,9 @@ import (
 )
 
 type Session struct {
-	DeviceID    string
-	Sender      netpoll.Connection
-	Receiver    netpoll.Connection
+	DeviceID         string
+	Sender, Receiver *muxConn
+
 	Ready       bool
 	ReadyChan   chan struct{}
 	DataChan    chan []byte
@@ -21,27 +20,27 @@ type Session struct {
 	ConnectTime time.Time // 记录首次连接时间
 	CloseNotify chan struct{}
 	started     bool // 标记是否已启动
-	senderSeq   uint32
+	// senderSeq   uint32
 	receiverSeq uint32
-	// mu sync.RWMutex
+	// mu          sync.RWMutex
 	mu spinLock
-	// look *int32
 }
 
 func NewSession(deviceID string) *Session {
+	ts := time.Now()
 	return &Session{
 		DeviceID: deviceID,
 		// mu:       new(spinLock),
-		// ReadyChan:   make(chan struct{}),
-		// DataChan:    make(chan []byte, 100),
-		// Timeout:     30 * time.Second,
-		// LastActive:  time.Now(),
-		// ConnectTime: time.Now(),
+		ReadyChan:   make(chan struct{}),
+		DataChan:    make(chan []byte, 100),
+		Timeout:     30 * time.Second,
+		LastActive:  ts,
+		ConnectTime: ts,
 		CloseNotify: make(chan struct{}),
 	}
 }
 
-func (s *Session) SetSender(conn netpoll.Connection) bool {
+func (s *Session) SetSender(conn *muxConn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -57,10 +56,20 @@ func (s *Session) SetSender(conn netpoll.Connection) bool {
 		go s.StartDataForward()
 		s.started = true
 	}
+
+	// // 发送连接成功状态
+	// Encodex(conn.Writer(), &DatadPacket{
+	// 	Header: &Header{
+	// 		Cmd:   CMD_STATUS,
+	// 		Order: 0,
+	// 	},
+	// 	Data: []byte{byte(STATUS_CONNECTED)},
+	// })
+
 	return s.checkReady()
 }
 
-func (s *Session) SetReceiver(conn netpoll.Connection) bool {
+func (s *Session) SetReceiver(conn *muxConn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -69,7 +78,7 @@ func (s *Session) SetReceiver(conn netpoll.Connection) bool {
 		return false
 	}
 
-	slog.Info("Session new receiver connected at ", "deviceID", s.DeviceID, "time", time.Now().Format(time.RFC3339))
+	slog.Info("Session new receiver connected  ", "deviceID", s.DeviceID, "time", time.Now().Format(time.RFC3339))
 	s.Receiver = conn
 	s.ConnectTime = time.Now() // 重置连接时间
 
@@ -92,6 +101,14 @@ func (s *Session) SetReceiver(conn netpoll.Connection) bool {
 			}
 		}()
 	}
+
+	// Encodex(conn.Writer(), &DatadPacket{
+	// 	Header: &Header{
+	// 		Cmd:   CMD_STATUS,
+	// 		Order: 0,
+	// 	},
+	// 	Data: []byte{byte(STATUS_CONNECTED)},
+	// })
 
 	return s.checkReady()
 }
@@ -158,42 +175,40 @@ func (s *Session) StartDataForward() {
 func (s *Session) monitorTimeout() {
 	ticker := GetTicker(time.Second)
 	defer ReleaseTicker(ticker)
-
+	slog.Info("开始检查超时 ", "time", time.Now().Unix())
 	for {
-		slog.Debug("开始检查超时 ", "time", time.Now().Unix())
 		select {
 		case <-ticker.C:
 			s.mu.Lock()
-			slog.Debug("定时检查超时 ", "time", time.Now().Unix())
+			// slog.Info("定时检查超时 ", "time", time.Now().Unix())
 			// 检查对端匹配超时
 			if s.Sender != nil && s.Receiver == nil {
 				elapsed := time.Since(s.ConnectTime)
-				slog.Debug("Session  only 「sender」 connected", "deviceID", s.DeviceID, "elapsed", elapsed)
+				// slog.Info("Session  only [sender] connected", "deviceID", s.DeviceID, "elapsed", elapsed)
 				if elapsed > s.Timeout {
-					slog.Debug("Session timeout: failed to match receiver", "deviceID", s.DeviceID)
+					slog.Info("Session timeout: failed to match receiver", "deviceID", s.DeviceID)
 					s.handleSingleDisconnect(s.Sender, STATUS_TIMEOUT)
 					s.Sender = nil
 				}
 			} else if s.Receiver != nil && s.Sender == nil {
 				elapsed := time.Since(s.ConnectTime)
-				slog.Debug("Session  only 「receiver」 connected", "deviceID", s.DeviceID, "elapsed", elapsed)
+				// slog.Info("Session  only [receiver] connected", "deviceID", s.DeviceID, "elapsed", elapsed)
 				if elapsed > s.Timeout {
-					slog.Debug("Session timeout: failed to match sender", "deviceID", s.DeviceID)
+					slog.Info("Session timeout: failed to match sender", "deviceID", s.DeviceID)
 					s.handleSingleDisconnect(s.Receiver, STATUS_TIMEOUT)
 					s.Receiver = nil
 				}
 			}
-			// 检查数据传输超时
-			if s.Sender != nil && s.Receiver != nil {
-				if time.Since(s.LastActive) > s.Timeout {
-					slog.Debug("Session timeout: no data transfer", "deviceID", s.DeviceID)
-					s.handleDisconnect(STATUS_TIMEOUT)
-				}
-			}
+			// // 检查数据传输超时
+			// if s.Sender != nil && s.Receiver != nil {
+			// 	if time.Since(s.LastActive) > s.Timeout {
+			// 		slog.Info("Session timeout: no data transfer", "deviceID", s.DeviceID)
+			// 		s.handleDisconnect(STATUS_TIMEOUT)
+			// 	}
+			// }
 			s.mu.Unlock()
 
 		case <-s.CloseNotify:
-			fmt.Println("关闭连接。。。。。。。。。。。。。。。。。。。")
 			slog.Info("Session closed", "deviceID", s.DeviceID)
 			return
 		}
@@ -279,18 +294,14 @@ func (s *Session) monitorConnections() {
 		case <-ticker.C:
 			s.mu.Lock()
 			// 检测sender连接状态
-			if s.Sender != nil {
-				if !s.Sender.IsActive() {
-					slog.Error("Session  [sender] connection not active", "deviceID", s.DeviceID)
-					s.handlePeerDisconnect(s.Sender, s.Receiver, STATUS_PEER_DISCONNECT)
-				}
+			if s.Sender != nil && !s.Sender.IsActive() {
+				slog.Error("Session  [sender] connection not active", "deviceID", s.DeviceID)
+				s.handlePeerDisconnect(s.Sender, s.Receiver, STATUS_PEER_DISCONNECT)
 			}
 			// 检测receiver连接状态
-			if s.Receiver != nil {
-				if !s.Receiver.IsActive() {
-					slog.Error("Session  [receiver] connection not active", "deviceID", s.DeviceID)
-					s.handlePeerDisconnect(s.Receiver, s.Sender, STATUS_PEER_DISCONNECT)
-				}
+			if s.Receiver != nil && !s.Receiver.IsActive() {
+				slog.Error("Session  [receiver] connection not active", "deviceID", s.DeviceID)
+				s.handlePeerDisconnect(s.Receiver, s.Sender, STATUS_PEER_DISCONNECT)
 			}
 			s.mu.Unlock()
 

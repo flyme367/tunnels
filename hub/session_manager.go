@@ -1,14 +1,13 @@
-package server
+package hub
 
 import (
-	"fmt"
 	"sync"
 )
 
 type SessionManager struct {
 	//deviceID =>*Session
 	sessions map[string]*Session
-	mu       sync.RWMutex
+	mu       sync.Mutex
 	// mu spinLock
 }
 
@@ -32,12 +31,12 @@ func (m *SessionManager) GetOrCreate(deviceID string) *Session {
 	return m.sessions[deviceID]
 }
 
-func (m *SessionManager) Remove(deviceID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[deviceID]; ok {
-		fmt.Printf("Removing session %s\n", deviceID)
-		s.handleDisconnect(STATUS_CLOSED)
-		delete(m.sessions, deviceID)
-	}
-}
+// func (m *SessionManager) Remove(deviceID string) {
+// 	m.mu.Lock()
+// 	defer m.mu.Unlock()
+// 	if s, ok := m.sessions[deviceID]; ok {
+// 		fmt.Printf("Removing session %s\n", deviceID)
+// 		s.handleDisconnect(STATUS_CLOSED)
+// 		delete(m.sessions, deviceID)
+// 	}
+// }

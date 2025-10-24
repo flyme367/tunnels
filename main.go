@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"tunnels/server"
+	"tunnels/hub"
 )
 
 var look int32 = 1
@@ -26,9 +26,9 @@ func main() {
 	// time.Sleep(time.Second)
 	// println(counter) // 应该输出100
 	fmt.Println(1232132123)
-	s := server.NewServer(
-		server.WithAddress("0.0.0.0:9085"),
-		server.WithTimeout(1),
+	s := hub.NewHub(
+		hub.WithAddress("0.0.0.0:9085"),
+		hub.WithTimeout(1),
 	)
 	s.Start(context.Background())
 }

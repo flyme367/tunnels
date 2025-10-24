@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"github.com/cloudwego/netpoll"
@@ -8,6 +8,7 @@ import (
 // type muxServer struct{}
 
 type muxConn struct {
+	Role uint8
 	netpoll.Connection
 	wqueue *mux.ShardQueue // use for write
 	// Ts     time.Time
@@ -31,9 +32,4 @@ func newMuxConn(conn netpoll.Connection) *muxConn {
 		// Ts:         time.Now(),
 	}
 	return mc
-}
-
-type RoleConn struct {
-	Role int8
-	*muxConn
 }

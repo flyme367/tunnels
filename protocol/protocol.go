@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	HeaderSize = 6 // 指令码 + 通讯ID + 数据长度 + CRC16
+	HeaderSize = 5 // 指令码 + 通讯ID + 数据长度 + CRC16
 )
 
 // 指令码
@@ -97,16 +97,20 @@ func DecodeData(data []byte) ([]byte, error) {
 }
 
 // 编码
-func Encode(cmd byte, seq uint16, data []byte) []byte {
+func Encode(req InitPacket) []byte {
 	// b := netpoll.NewLinkBuffer(len(data) + HeaderSize)
 
 	buf := new(bytes.Buffer)
 	// 写入指令码
-	buf.WriteByte(cmd)
+	buf.WriteByte(req.Header.Cmd)
 	// 写入通讯ID
-	binary.Write(buf, binary.BigEndian, seq)
+	binary.Write(buf, binary.BigEndian, req.Header.Order)
 	// 写入数据包
-	encodedData := EncodeData(data)
+	encodedData := make([]byte, 1+len(req.DeviceID))
+	encodedData[0] = byte(req.Role)
+	copy(encodedData[1:], req.DeviceID)
+	//写入数据长度
+	binary.Write(buf, binary.BigEndian, uint16(len(encodedData)))
 	buf.Write(encodedData)
 
 	// Get packet data before CRC
