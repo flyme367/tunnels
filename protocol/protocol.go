@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"tunnels/utils"
 
 	"github.com/cloudwego/netpoll"
@@ -124,87 +125,129 @@ func Encode(req InitPacket) []byte {
 	return buf.Bytes()
 }
 
-func decodeData(reader netpoll.Reader) (h *DatadPacket, err error) {
-	// if reader.Len() < 7 {
-	// 	err = errors.New("invalid packet length")
-	// 	return
-	// }
-	r2, err := reader.Peek(reader.Len() - 2)
+// func Decodexx(reader netpoll.Reader) (h *DatadPacket, err error) {
+// 	// if reader.Len() < 7 {
+// 	// 	err = errors.New("invalid packet length")
+// 	// 	return
+// 	// }
+
+// 	r2, err := reader.Peek(reader.Len() - 2)
+// 	if err != nil {
+// 		err = errors.New("reader cmd invalid 1")
+// 		return
+// 	}
+
+// 	//计算crc16
+// 	calculatedCRC := utils.GetCRC16(r2)
+
+// 	// fmt.Println("calculatedCRC:", calculatedCRC)
+// 	// 读取指令码
+// 	cmd, err := reader.ReadByte()
+// 	if err != nil {
+// 		err = errors.New("reader cmd invalid 2")
+// 		return
+// 	}
+// 	// 读取通讯ID (2 bytes)
+// 	cid, err := reader.Next(2)
+// 	if err != nil {
+// 		err = errors.New("reader cid invalid")
+// 		return
+// 	}
+// 	seq := binary.BigEndian.Uint16(cid)
+
+// 	// 指令数据内容长度(2 bytes)
+// 	dlen, err := reader.Next(2)
+// 	if err != nil {
+// 		err = errors.New("dlen invalid")
+// 		return
+// 	}
+// 	dataLen := binary.BigEndian.Uint16(dlen)
+// 	// fmt.Printf("数据长度：%d\n", dataLen)
+// 	//读取数据
+// 	data, err := reader.Next(int(dataLen))
+// 	if err != nil {
+// 		err = errors.New("data  invalid")
+// 		return
+// 	}
+
+// 	//读取crc16
+// 	crcBytes, err := reader.Next(2)
+// 	if err != nil {
+// 		err = errors.New("CRC16 invalid")
+// 		return
+// 	}
+// 	crc := binary.BigEndian.Uint16(crcBytes)
+
+// 	// 计算并验证CRC
+// 	if crc != calculatedCRC {
+// 		err = errors.New("CRC validation failed")
+// 		return
+// 	}
+
+// 	h = &DatadPacket{
+// 		&Header{
+// 			cmd,
+// 			seq,
+// 		},
+// 		data,
+// 	}
+// 	return
+// }
+
+func Decodex(reader netpoll.Reader) (h *DatadPacket, err error) {
+	defer reader.Release()
+	cmdCode, err := reader.ReadBinary(1)
 	if err != nil {
-		err = errors.New("reader cmd invalid 1")
+		// fmt.Println("报错了？")
+		// err = reader.Release()
 		return
 	}
 
-	//计算crc16
-	calculatedCRC := utils.GetCRC16(r2)
-
-	// fmt.Println("calculatedCRC:", calculatedCRC)
-	// 读取指令码
-	cmd, err := reader.ReadByte()
-	if err != nil {
-		err = errors.New("reader cmd invalid 2")
-		return
-	}
-	// 读取通讯ID (2 bytes)
-	cid, err := reader.Next(2)
-	if err != nil {
-		err = errors.New("reader cid invalid")
-		return
-	}
-	seq := binary.BigEndian.Uint16(cid)
-
-	// 指令数据内容长度(2 bytes)
-	dlen, err := reader.Next(2)
-	if err != nil {
-		err = errors.New("dlen invalid")
-		return
-	}
-	dataLen := binary.BigEndian.Uint16(dlen)
-	// fmt.Printf("数据长度：%d\n", dataLen)
-	//读取数据
-	data, err := reader.Next(int(dataLen))
-	if err != nil {
-		err = errors.New("data  invalid")
+	if cmdCode[0] != CMD_DATA &&
+		cmdCode[0] != CMD_STATUS &&
+		cmdCode[0] != CMD_INIT {
+		err = errors.New("invalid cmd code")
+		// reader.Release()
+		// fmt.Println(err)
 		return
 	}
 
-	//读取crc16
-	crcBytes, err := reader.Next(2)
+	header, err := reader.ReadBinary(HeaderSize - 1)
 	if err != nil {
-		err = errors.New("CRC16 invalid")
 		return
 	}
-	crc := binary.BigEndian.Uint16(crcBytes)
+
+	dataL := binary.BigEndian.Uint16(header[2:4])
+	if dataL <= 0 {
+		return
+	}
+
+	payload, err := reader.ReadBinary(int(dataL) + 2)
+	if err != nil {
+		return
+	}
+
+	payloadL := len(payload)
+	data := payload[:payloadL-2]
 
 	// 计算并验证CRC
-	if crc != calculatedCRC {
+	if binary.BigEndian.Uint16(payload[payloadL-2:]) != utils.GetCRC16(slices.Concat(cmdCode, header, data)) {
 		err = errors.New("CRC validation failed")
 		return
 	}
 
 	h = &DatadPacket{
 		&Header{
-			cmd,
-			seq,
+			Cmd:   cmdCode[0],
+			Order: binary.BigEndian.Uint16(header[1:3]),
 		},
 		data,
 	}
+	// err = reader.Release()
 	return
 }
 
-func ProcessRequest(reader netpoll.Reader, h *InitPacket) (err error) {
-	req, err := decodeData(reader)
-	if err != nil {
-		return
-	}
-
-	h.DeviceID = string(bytes.TrimRight(req.Data[1:], "\x00"))
-	h.Role = uint16(req.Data[0])
-	err = reader.Release()
-	return
-}
-
-func Encodex(writer netpoll.Writer, d *DatadPacket) {
+func Encodex(writer netpoll.Writer, d *DatadPacket) (err error) {
 	//指令编码1字节 + 业务流水号2字节 + 指令数据内容长度2字节 + 数据 +CRC2字节
 	// data := []byte{d.Status}
 	length := len(d.Data)
@@ -230,7 +273,7 @@ func Encodex(writer netpoll.Writer, d *DatadPacket) {
 	// fmt.Printf("crc16: %x\n", crc16)
 	// fmt.Printf("crc16: %d\n", binary.BigEndian.Uint16(crc16))
 	writer.WriteBinary(crc16)
-	return
+	return writer.Flush()
 }
 
 // 解码
@@ -282,10 +325,10 @@ func Encodex(writer netpoll.Writer, d *DatadPacket) {
 // 	return data[1 : dataLen+1], nil
 
 // }
-func ForwardRequest(reader netpoll.Reader) (req *DatadPacket, err error) {
-	if req, err = decodeData(reader); err != nil {
-		return
-	}
-	err = reader.Release()
-	return
-}
+// func ForwardRequest(reader netpoll.Reader) (req *DatadPacket, err error) {
+// 	if req, err = Decodex(reader); err != nil {
+// 		return
+// 	}
+// 	err = reader.Release()
+// 	return
+// }

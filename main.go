@@ -6,8 +6,6 @@ import (
 	"tunnels/hub"
 )
 
-var look int32 = 1
-
 func main() {
 	// defer atomic.AddInt32(&look, 1)
 	// var lock server.SpinLock

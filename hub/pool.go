@@ -36,8 +36,8 @@ func ReleaseTicker(t *time.Ticker) {
 	tickerPool.Put(t)
 }
 
-var connPool = sync.Pool{
-	New: func() any {
-		return &muxConn{}
-	},
-}
+// var connPool = sync.Pool{
+// 	New: func() any {
+// 		return &muxConn{}
+// 	},
+// }
