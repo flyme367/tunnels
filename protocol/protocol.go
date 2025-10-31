@@ -66,7 +66,7 @@ type StatusPacket struct {
 // }
 
 type DatadPacket struct {
-	*Header
+	Header
 	Data []byte
 }
 
@@ -237,7 +237,7 @@ func Decodex(reader netpoll.Reader) (h *DatadPacket, err error) {
 	}
 
 	h = &DatadPacket{
-		&Header{
+		Header{
 			Cmd:   cmdCode[0],
 			Order: binary.BigEndian.Uint16(header[1:3]),
 		},

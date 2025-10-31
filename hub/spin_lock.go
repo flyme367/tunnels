@@ -21,10 +21,6 @@ func newSpinLock() *spinLock {
 
 // Lock 获取锁
 func (s *spinLock) Lock() {
-	// 快速路径：尝试直接获取锁
-	if atomic.CompareAndSwapUint32(&s.state, 0, 1) {
-		return
-	}
 
 	// 自旋等待
 	for {

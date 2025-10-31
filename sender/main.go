@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"time"
 	pl "tunnels/protocol"
 	"tunnels/utils"
 )
@@ -18,74 +17,38 @@ func main() {
 	}
 	defer conn.Close()
 	log.Println("Connected to server at localhost:9085")
-	// conn.Write(pl.Encode(pl.InitPacket{
-	// 	DeviceID: "7062450000771987999",
-	// 	Role:     pl.ROLE_SENDER,
-	// 	Header: &pl.Header{
-	// 		Cmd:   pl.CMD_INIT,
-	// 		Order: 0,
-	// 	},
-	// }))
+	conn.Write(pl.Encode(pl.InitPacket{
+		DeviceID: "7062450000771987999",
+		Role:     pl.ROLE_SENDER,
+		Header: &pl.Header{
+			Cmd:   pl.CMD_INIT,
+			Order: 0,
+		},
+	}))
+	readcl := make(chan *pl.DatadPacket, 10)
 	go func() {
+		buf := make([]byte, 1024)
 		for {
-			conn.Write(pl.Encode(pl.InitPacket{
-				DeviceID: "7062450000771987999",
-				Role:     pl.ROLE_SENDER,
-				Header: &pl.Header{
-					Cmd:   pl.CMD_INIT,
-					Order: 0,
-				},
-			}))
-			// conn.Write([]byte("1"))
-
-			time.Sleep(time.Second * 1)
+			n, err := conn.Read(buf)
+			if err != nil {
+				log.Fatalf("Failed to read response: %v", err)
+			}
+			pl.DecodeData(buf[:n])
+			// fmt.Println(string(buf[:n]) + "/8")
+			// fmt.Printf("%v\n", buf[:n])
 		}
 	}()
-	// initPacket := pl.InitPacket{
-	// 	Header: &pl.Header{
-	// 		Cmd:   pl.CMD_INIT,
-	// 		Order: 0,
-	// 	},
-	// 	DeviceID: "7062450000771987999",
-	// 	Role:     pl.ROLE_SENDER,
-	// }
 
-	// readcl := make(chan *pl.DatadPacket)
-	// // initData := pl.Encode(initPacket)
-	// // conn.Write(initData)
-
-	// go func() {
-	// 	buf := make([]byte, 1024)
-	// 	for {
-	// 		n, err := conn.Read(buf)
-	// 		if err != nil {
-	// 			log.Fatalf("Failed to read response: %v", err)
-	// 		}
-	// 		ReceiveData(readcl, buf[:n])
-	// 		// log.Printf("Received response from server: %s", string(buf[:n]))
-	// 	}
-	// }()
-
-	// for {
-	// 	select {
-	// 	case mgs := <-readcl:
-	// 		fmt.Printf("%+v\n", mgs)
-	// 	}
-	// }
-	buf := make([]byte, 1024)
 	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			log.Fatalf("Failed to read response: %v", err)
+		select {
+		case mgs := <-readcl:
+			fmt.Printf("%+v\n", mgs)
 		}
-
-		fmt.Println(string(buf[:n]) + "/8")
-		// fmt.Printf("%v\n", buf[:n])
 	}
 }
 
 func ReceiveData(cl chan *pl.DatadPacket, plaod []byte) (err error) {
-	fmt.Printf("%x\n", plaod)
+	// fmt.Printf("%x\n", plaod)
 	index := 5
 LOOP:
 	if len(plaod) < index {
@@ -93,9 +56,9 @@ LOOP:
 	}
 	// cmd := plaod[0]
 	l := int(binary.BigEndian.Uint16(plaod[3:index]))
-	fmt.Printf("数据长度:%d\n", l)
+	// fmt.Printf("数据长度:%d\n", l)
 	data := plaod[index : index+l]
-	fmt.Printf("data：%x\n", data)
+	// fmt.Printf("data：%x\n", data)
 	crc16 := binary.BigEndian.Uint16(plaod[index+l : index+l+2])
 
 	if crc16 != utils.GetCRC16(plaod[:index+l]) {
@@ -105,7 +68,7 @@ LOOP:
 	}
 
 	cl <- &pl.DatadPacket{
-		Header: &pl.Header{
+		Header: pl.Header{
 			Cmd:   plaod[0],
 			Order: binary.BigEndian.Uint16(plaod[1:3]),
 		},
