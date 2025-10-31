@@ -96,8 +96,7 @@ func (s *Session) SetConner(role byte, conn netpoll.Connection) (forward netpoll
 				s.mu.Unlock()
 			}
 		}(s)
-		forward = s.Sender
-		//值有偶
+		forward = s.Receiver
 	case pl.ROLE_RECEIVER:
 		if s.Receiver != nil {
 			err = errors.New("Session receiver already exists")
