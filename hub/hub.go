@@ -278,93 +278,77 @@ func UnsafeSliceToString(b []byte) string {
 }
 
 func (h *Hub) handleConnection(ctx context.Context, conn netpoll.Connection) (err error) {
+	defer conn.Close()
 	var (
 		deviceCode string
 		forward    netpoll.Connection
 	)
 
 	reader := conn.Reader()
-
-	// 创建带取消功能的context
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel() // 确保函数退出时总是调用cancel
-
 	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("Connection context done", "deviceCode", deviceCode)
-			if deviceCode != "" {
-				h.sessionMar.Remove(deviceCode)
-			}
+		req, err1 := pl.Decodex(reader)
+		if err1 != nil {
+			slog.Debug("Failed to decode request", "error", err1)
 			return
-		default:
-			req, err1 := pl.Decodex(reader)
-			if err1 != nil {
-				slog.Debug("Failed to decode request", "error", err1)
-				return err1
-			}
-
-			switch req.Cmd {
-			case pl.CMD_DATA: // 数据转发
-				if deviceCode == "" {
-					slog.Warn("Received data before initialization")
-					return errors.New("received data before initialization")
-				}
-
-				session, ok := h.sessionMar.sessions[deviceCode]
-				if !ok {
-					slog.Warn("Session not found for device", "deviceCode", deviceCode)
-					return errors.New("session not found")
-				}
-
-				// 检查转发连接是否有效且会话已就绪
-				if forward == nil || !forward.IsActive() || !session.CompareStatus(pl.STATUS_READY) {
-					slog.Warn("Forward connection not ready", "deviceCode", deviceCode)
-					return errors.New("forward connection not ready")
-				}
-
-				// 转发数据
-				if err := pl.Encodex(forward.Writer(), req); err != nil {
-					slog.Error("Failed to forward data", "error", err)
-					return err
-				}
-
-			case pl.CMD_INIT:
-				slog.Info("Processing initialization packet")
-
-				// 解析设备代码
-				if len(req.Data) < 1 {
-					slog.Error("Invalid init packet data length")
-					return errors.New("invalid init packet")
-				}
-
-				deviceCode = UnsafeSliceToString(bytes.TrimRight(req.Data[1:], "\x00"))
-
-				// 创建或获取会话
-				session := h.sessionMar.GetOrCreate(deviceCode)
-
-				// 设置连接关闭回调
-				conn.AddCloseCallback(func(connection netpoll.Connection) error {
-					slog.Info("Connection closed", "deviceCode", deviceCode)
-					h.sessionMar.Remove(deviceCode)
-					return nil
-				})
-
-				// 设置连接角色
-				if forward, err = session.SetConner(req.Data[0], conn); err != nil {
-					slog.Error("Failed to set connection role", "error", err)
-					return err
-				}
-
-			case pl.CMD_STATUS: // 处理客户端状态包
-				slog.Info("Received status packet")
-				// TODO: 实现状态包处理逻辑
-
-			default:
-				slog.Warn("Unknown command", "cmd", req.Cmd)
-				return errors.New("unknown command")
-			}
 		}
+
+		switch req.Cmd {
+		case pl.CMD_DATA: // 数据转发
+			if deviceCode == "" {
+				return
+			}
+
+			session, ok := h.sessionMar.sessions[deviceCode]
+			if !ok {
+				slog.Warn("Session not found for device", "deviceCode", deviceCode)
+				return errors.New("session not found")
+			}
+
+			// 检查转发连接是否有效且会话已就绪
+			if forward == nil || !forward.IsActive() || !session.CompareStatus(pl.STATUS_READY) {
+				slog.Warn("Forward connection not ready", "deviceCode", deviceCode)
+				return errors.New("forward connection not ready")
+			}
+
+			// 转发数据
+			if err := pl.Encodex(forward.Writer(), req); err != nil {
+				slog.Error("Failed to forward data", "error", err)
+				return err
+			}
+
+		case pl.CMD_INIT:
+			slog.Info("Processing initialization packet")
+
+			// 解析设备代码
+			if len(req.Data) < 1 {
+				slog.Error("Invalid init packet data length")
+				return errors.New("invalid init packet")
+			}
+
+			// 创建或获取会话
+			session := h.sessionMar.GetOrCreate(UnsafeSliceToString(bytes.TrimRight(req.Data[1:], "\x00")))
+
+			// 设置连接角色
+			if forward, err = session.SetConner(req.Data[0], conn); err != nil {
+				slog.Error("Failed to set connection role", "error", err)
+				return err
+			}
+
+			deviceCode = session.DeviceID
+			// 设置连接关闭回调
+			conn.AddCloseCallback(func(connection netpoll.Connection) error {
+				h.sessionMar.Remove(session.DeviceID)
+				return nil
+			})
+		case pl.CMD_STATUS: // 处理客户端状态包
+			slog.Info("Received status packet")
+			// TODO: 实现状态包处理逻辑
+
+		default:
+			slog.Warn("Unknown command", "cmd", req.Cmd)
+			return errors.New("unknown command")
+		}
+
 	}
 }
 
