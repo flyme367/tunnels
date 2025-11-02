@@ -38,6 +38,9 @@ const (
 	//传输等待
 )
 
+type ForwardCtx struct{}
+type SessionCtx struct{}
+
 // 协议头
 type Header struct {
 	Cmd   byte   // 指令码
@@ -98,7 +101,7 @@ func DecodeData(data []byte) ([]byte, error) {
 }
 
 // 编码
-func Encode(req InitPacket) []byte {
+func Encode(req DatadPacket) []byte {
 	// b := netpoll.NewLinkBuffer(len(data) + HeaderSize)
 
 	buf := new(bytes.Buffer)
@@ -107,12 +110,12 @@ func Encode(req InitPacket) []byte {
 	// 写入通讯ID
 	binary.Write(buf, binary.BigEndian, req.Header.Order)
 	// 写入数据包
-	encodedData := make([]byte, 1+len(req.DeviceID))
-	encodedData[0] = byte(req.Role)
-	copy(encodedData[1:], req.DeviceID)
+	// encodedData := make([]byte, 1+len(req.DeviceID))
+	// encodedData[0] = byte(req.Role)
+	// copy(encodedData[1:], req.DeviceID)
 	//写入数据长度
-	binary.Write(buf, binary.BigEndian, uint16(len(encodedData)))
-	buf.Write(encodedData)
+	binary.Write(buf, binary.BigEndian, uint16(len(req.Data)))
+	buf.Write(req.Data)
 
 	// Get packet data before CRC
 	packetData := buf.Bytes()

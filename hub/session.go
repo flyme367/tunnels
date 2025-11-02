@@ -1,7 +1,9 @@
 package hub
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -48,7 +50,7 @@ func NewSession(deviceID string) *Session {
 }
 
 func (s *Session) SetStatus() {
-	// atomic.SwapUint32(&s.status, pl.CMD_STATUS)
+	atomic.SwapUint32(&s.status, pl.STATUS_READY)
 	return
 }
 
@@ -62,7 +64,7 @@ func (s *Session) CompareStatus(diff uint32) bool {
 // }
 
 // 设置端连接角色
-func (s *Session) SetConner(role byte, conn netpoll.Connection) (forward netpoll.Connection, err error) {
+func (s *Session) SetConner(ctx context.Context, conn netpoll.Connection, role byte) (forward netpoll.Connection, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// s.ConnectTime = time.Now() // 重置连接时间
@@ -78,24 +80,43 @@ func (s *Session) SetConner(role byte, conn netpoll.Connection) (forward netpoll
 
 		s.Sender = conn
 		slog.Info("[Sender] Connected To Session", "DeiveID", s.DeviceID, "IP", conn.RemoteAddr().String())
-
-		go func(s *Session) {
-			time.Sleep(s.Timeout)
-			if s != nil && s.Sender != nil && s.Receiver == nil {
-				s.mu.Lock()
-				pl.Encodex(s.Sender.Writer(), &pl.DatadPacket{
-					pl.Header{
-						pl.CMD_STATUS,
-						uint16(s.senderSeq),
-					},
-					[]byte{byte(pl.STATUS_TIMEOUT)},
-				})
-				slog.Info("Session  [receiver] timeout, no sender connected", "deviceId", s.DeviceID)
-				s.Sender.Close()
-				s.Sender = nil
-				s.mu.Unlock()
-			}
-		}(s)
+		// go func() {
+		// 	// sync.OnceFunc(func() {
+		// 	time.Sleep(s.Timeout)
+		// 	if s != nil && s.Sender != nil && s.Receiver == nil {
+		// 		s.mu.Lock()
+		// 		pl.Encodex(s.Sender.Writer(), &pl.DatadPacket{
+		// 			pl.Header{
+		// 				pl.CMD_STATUS,
+		// 				uint16(s.senderSeq),
+		// 			},
+		// 			[]byte{byte(pl.STATUS_TIMEOUT)},
+		// 		})
+		// 		slog.Info("Session  [receiver] timeout, no sender connected", "deviceId", s.DeviceID)
+		// 		ctx = context.WithValue(ctx, pl.SessionCtx{}, "[receiver] timeout")
+		// 		s.Sender.Close()
+		// 		s.Sender = nil
+		// 		s.mu.Unlock()
+		// 	}
+		// 	// })
+		// }()
+		// 	time.Sleep(s.Timeout)
+		// 	if s != nil && s.Sender != nil && s.Receiver == nil {
+		// 		s.mu.Lock()
+		// 		pl.Encodex(s.Sender.Writer(), &pl.DatadPacket{
+		// 			pl.Header{
+		// 				pl.CMD_STATUS,
+		// 				uint16(s.senderSeq),
+		// 			},
+		// 			[]byte{byte(pl.STATUS_TIMEOUT)},
+		// 		})
+		// 		slog.Info("Session  [receiver] timeout, no sender connected", "deviceId", s.DeviceID)
+		// 		ctx = context.WithValue(ctx, pl.SessionCtx{}, "[receiver] timeout")
+		// 		s.Sender.Close()
+		// 		s.Sender = nil
+		// 		s.mu.Unlock()
+		// 	}
+		// }(s)
 		forward = s.Receiver
 	case pl.ROLE_RECEIVER:
 		if s.Receiver != nil {
@@ -126,6 +147,26 @@ func (s *Session) SetConner(role byte, conn netpoll.Connection) (forward netpoll
 		[]byte{pl.STATUS_CONNECTED},
 	})
 
+	//设置关闭回调函数
+	conn.AddCloseCallback(func(connection netpoll.Connection) error {
+		d, ok := ctx.Value("hh").(string)
+		if ok {
+			fmt.Println(d)
+		}
+		if s != nil {
+			fmt.Println("回话id：" + s.DeviceID)
+		}
+		return nil
+	})
+	s.SetStatus()
+
+	pl.Encodex(conn.Writer(), &pl.DatadPacket{
+		pl.Header{
+			Cmd:   pl.CMD_STATUS,
+			Order: seq,
+		},
+		[]byte{pl.STATUS_READY},
+	})
 	// 启动超时检测
 	// if !s.started {
 	// 	go s.listen()

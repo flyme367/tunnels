@@ -280,12 +280,16 @@ func UnsafeSliceToString(b []byte) string {
 func (h *Hub) handleConnection(ctx context.Context, conn netpoll.Connection) (err error) {
 	defer conn.Close()
 	var (
-		deviceCode string
-		forward    netpoll.Connection
+		session *Session
+		forward netpoll.Connection
 	)
 
 	reader := conn.Reader()
 	for {
+		// select {
+		// case <-ctx.Done():
+		// 	fmt.Println("??????????")
+		// default:
 		req, err1 := pl.Decodex(reader)
 		if err1 != nil {
 			slog.Debug("Failed to decode request", "error", err1)
@@ -294,27 +298,36 @@ func (h *Hub) handleConnection(ctx context.Context, conn netpoll.Connection) (er
 
 		switch req.Cmd {
 		case pl.CMD_DATA: // 数据转发
-			if deviceCode == "" {
+			// if session == nil || !forward.IsActive() {
+			// 	return
+			// }
+			if session == nil || !session.CompareStatus(pl.STATUS_READY) {
 				return
 			}
-
-			session, ok := h.sessionMar.sessions[deviceCode]
-			if !ok {
-				slog.Warn("Session not found for device", "deviceCode", deviceCode)
-				return errors.New("session not found")
-			}
+			fmt.Println(string(req.Data))
+			// session, ok := h.sessionMar.sessions[session.DeviceID]
+			// if !ok {
+			// 	slog.Warn("Session not found for device", "deviceCode", session.DeviceID)
+			// 	return errors.New("session not found")
+			// }
 
 			// 检查转发连接是否有效且会话已就绪
-			if forward == nil || !forward.IsActive() || !session.CompareStatus(pl.STATUS_READY) {
-				slog.Warn("Forward connection not ready", "deviceCode", deviceCode)
-				return errors.New("forward connection not ready")
+			// if forward == nil || !forward.IsActive() || !session.CompareStatus(pl.STATUS_READY) {
+			// 	slog.Warn("Forward connection not ready", "deviceCode", session.DeviceID)
+			// 	return errors.New("forward connection not ready")
+			// }
+			if forward != nil {
+				//转发数据
+				if err := pl.Encodex(forward.Writer(), req); err != nil {
+					slog.Error("Failed to forward data", "error", err)
+					return err
+				}
 			}
-
 			// 转发数据
-			if err := pl.Encodex(forward.Writer(), req); err != nil {
-				slog.Error("Failed to forward data", "error", err)
-				return err
-			}
+			// if err := pl.Encodex(forward.Writer(), req); err != nil {
+			// 	slog.Error("Failed to forward data", "error", err)
+			// 	return err
+			// }
 
 		case pl.CMD_INIT:
 			slog.Info("Processing initialization packet")
@@ -326,38 +339,60 @@ func (h *Hub) handleConnection(ctx context.Context, conn netpoll.Connection) (er
 			}
 
 			// 创建或获取会话
-			session := h.sessionMar.GetOrCreate(UnsafeSliceToString(bytes.TrimRight(req.Data[1:], "\x00")))
+			session = h.sessionMar.GetOrCreate(UnsafeSliceToString(bytes.TrimRight(req.Data[1:], "\x00")))
 
 			// 设置连接角色
-			if forward, err = session.SetConner(req.Data[0], conn); err != nil {
+			if forward, err = session.SetConner(ctx, conn, req.Data[0]); err != nil {
 				slog.Error("Failed to set connection role", "error", err)
 				return err
 			}
-
-			deviceCode = session.DeviceID
+			// ctx = context.WithValue(ctx, "hh", session)
 			// 设置连接关闭回调
-			conn.AddCloseCallback(func(connection netpoll.Connection) error {
-				h.sessionMar.Remove(session.DeviceID)
-				return nil
-			})
+
+			// conn.SetReadDeadline(time.Now().Add(time.Second * 5))
 		case pl.CMD_STATUS: // 处理客户端状态包
 			slog.Info("Received status packet")
+			if session == nil {
+				return
+			}
+
+			if req.Data[0] == pl.STATUS_CONNECTED || req.Data[0] == pl.STATUS_PEER_DISCONNECT {
+				return
+			}
 			// TODO: 实现状态包处理逻辑
 
-		default:
-			slog.Warn("Unknown command", "cmd", req.Cmd)
-			return errors.New("unknown command")
+			// default:
+			// 	slog.Warn("Unknown command", "cmd", req.Cmd)
+			// 	return errors.New("unknown command")
 		}
-
 	}
+	return
 }
 
 // 客户端主动断开监听
 func handleDisconnect(ctx context.Context, conn netpoll.Connection) {
-	_, cancel := context.WithCancel(ctx)
-	cancel()
+	// s := ctx.Value(pl.SessionCtx{}).(*Session)
+	// if conn == s.Receiver {
+	// 	fmt.Println("Receiver")
+	// }
+
+	// if conn == s.Sender {
+	// 	fmt.Println("Sender")
+	// }
+	// _, cancel := context.WithCancel(ctx)
+	// cancel()
 	// mc := ctx.Value(ctxkey).(*muxConn)
 	slog.Info("关闭连接FUN")
+	// ctx.Err()
+	// if err1 := ctx.Err(); err1 != nil {
+	// 	fmt.Println(err1)
+	// }
+	// conn.Close()
+	// ctx, cancel := context.WithCancel(ctx)
+	// ctx = context.WithValue(ctx, "hh", "客户端主动关闭连接")
+	conn.Close()
+	// cancel()
+	// slog.Info("关闭连接FUN")
 }
 
 // GetReceiverSeq returns the current receiver sequence number
