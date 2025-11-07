@@ -15,6 +15,7 @@ import (
 	pl "tunnels/protocol"
 	"tunnels/utils"
 
+	"github.com/bytedance/gopkg/lang/mcache"
 	"github.com/cloudwego/netpoll"
 )
 
@@ -277,21 +278,35 @@ func UnsafeSliceToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
 
+// func ReceiveData(reader netpoll.Reader) (it iter.Seq[*pl.DatadPacket], err error) {
+// 	it:=
+// 	// return func(yield func(*pl.DatadPacket) bool) {
+// 	// 	// a, b := 0, 1
+// 	// 	// for i := 0; i < limit; i++ {
+// 	// 	// 	if !yield(a) {
+// 	// 	// 		return
+// 	// 	// 	}
+// 	// 	// 	a, b = b, a+b
+// 	// 	// }
+// 	// }
+// 	return
+// }
+
 func (h *Hub) handleConnection(ctx context.Context, conn netpoll.Connection) (err error) {
 	defer conn.Close()
+
+	malloc := mcache.Malloc(1024, 8192)
+	defer mcache.Free(malloc)
+
 	var (
+		req     pl.DatadPacket
 		session *Session
 		forward netpoll.Connection
 	)
 
 	reader := conn.Reader()
 	for {
-		// select {
-		// case <-ctx.Done():
-		// 	fmt.Println("??????????")
-		// default:
-		req, err1 := pl.Decodex(reader)
-		if err1 != nil {
+		if err1 := pl.Decodex(reader, &req, malloc); err1 != nil {
 			slog.Debug("Failed to decode request", "error", err1)
 			return
 		}
@@ -318,7 +333,7 @@ func (h *Hub) handleConnection(ctx context.Context, conn netpoll.Connection) (er
 			// }
 			if forward != nil {
 				//转发数据
-				if err := pl.Encodex(forward.Writer(), req); err != nil {
+				if err := pl.Encodex(forward.Writer(), &req); err != nil {
 					slog.Error("Failed to forward data", "error", err)
 					return err
 				}

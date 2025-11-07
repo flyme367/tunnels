@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
-	"time"
 	pl "tunnels/protocol"
 )
 
@@ -30,7 +28,7 @@ func main() {
 		buf.Write(data)
 	}
 	//角色字段
-	appendData(0x00, []byte{pl.ROLE_SENDER})
+	appendData(0x00, []byte{pl.ROLE_RECEIVER})
 	appendData(0x01, []byte("7062450000771987999"))
 	conn.Write(pl.Encode(pl.DatadPacket{
 		Cmd:  pl.CMD_INIT,
@@ -58,45 +56,26 @@ func main() {
 		}
 	}()
 	// var ready uint32
-	ctx, cancel := context.WithCancel(context.Background())
+	// ctx, cancel := context.WithCancel(context.Background())
 	for {
 		select {
 		case mgs := <-readcl:
 			switch mgs.Cmd {
-			// case pl.CMD_DATA:
-			// 	if atomic.LoadUint32(&ready) != 1 {
-			// 		return
-			// 	}
-
-			// 	conn.Write(pl.Encode(pl.DatadPacket{
-			// 		Header: pl.Header{
-			// 			Cmd:   pl.CMD_DATA,
-			// 			Order: 0,
-			// 		},
-			// 		Data: []byte(time.Now().Format("2006-01-02 15:04:05")),
-			// 	}))
+			case pl.CMD_DATA:
+				fmt.Println("接收数据:" + string(mgs.Data))
 			case pl.CMD_STATUS:
 				if mgs.Data[0] == pl.STATUS_CONNECTED {
-					fmt.Println("已成功连接服务器，等待接收端。。。。。。。。。。。。。。。。")
+					fmt.Println("已成功连接服务器，等待接发送端。。。。。。。。。。。。。。。。")
 				} else if mgs.Data[0] == pl.STATUS_READY {
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						default:
-							fmt.Println("发送数据")
-							conn.Write(pl.Encode(pl.DatadPacket{
-								Cmd:  pl.CMD_DATA,
-								Data: []byte(time.Now().Format("2006-01-02 15:04:05")),
-							}))
-							time.Sleep(time.Second * 1)
-						}
-					}
-				} else {
-					cancel()
-					fmt.Printf("关闭连接, 状态%d\n", mgs.Data[0])
-					return
+					fmt.Println("已就绪，开始接收数据。。。。。。。。。。。。。。。")
+				} else if mgs.Data[0] == pl.STATUS_PEER_DISCONNECT {
+					fmt.Println("发送端关闭了")
 				}
+				// } else {
+				// 	cancel()
+				// 	fmt.Printf("关闭连接, 状态%d\n", mgs.Data[0])
+				// 	return
+				// }
 
 			}
 		}

@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"slices"
+	"iter"
 	"tunnels/utils"
 
 	"github.com/cloudwego/netpoll"
@@ -43,8 +43,8 @@ type SessionCtx struct{}
 
 // 协议头
 type Header struct {
-	Cmd   byte   // 指令码
-	Order uint16 // 通讯ID
+	Cmd byte // 指令码
+	// Order uint16 // 通讯ID
 	// Length uint16 // 数据长度
 	// CRC uint16 // CRC16校验
 	// Data *InitPacket
@@ -69,7 +69,7 @@ type StatusPacket struct {
 // }
 
 type DatadPacket struct {
-	Header
+	Cmd  byte // 指令码
 	Data []byte
 }
 
@@ -106,9 +106,9 @@ func Encode(req DatadPacket) []byte {
 
 	buf := new(bytes.Buffer)
 	// 写入指令码
-	buf.WriteByte(req.Header.Cmd)
-	// 写入通讯ID
-	binary.Write(buf, binary.BigEndian, req.Header.Order)
+	buf.WriteByte(req.Cmd)
+	// // 写入通讯ID
+	// binary.Write(buf, binary.BigEndian, req.Header.Order)
 	// 写入数据包
 	// encodedData := make([]byte, 1+len(req.DeviceID))
 	// encodedData[0] = byte(req.Role)
@@ -118,14 +118,15 @@ func Encode(req DatadPacket) []byte {
 	buf.Write(req.Data)
 
 	// Get packet data before CRC
-	packetData := buf.Bytes()
-	// Calculate CRC on packet data
-	crc := utils.GetCRC16(packetData)
-	// Write CRC
-	binary.Write(buf, binary.BigEndian, crc)
+	// packetData := buf.Bytes()
+	// // Calculate CRC on packet data
+	// crc := utils.GetCRC16(packetData)
+	// // Write CRC
+	// binary.Write(buf, binary.BigEndian, crc)
 	// log.Printf("encode crc16: %v (data length: %d)", crc, len(packetData))
-
-	return buf.Bytes()
+	bufs := buf.Bytes()
+	fmt.Printf("encode: %x\n", bufs)
+	return bufs
 }
 
 // func Decodexx(reader netpoll.Reader) (h *DatadPacket, err error) {
@@ -197,21 +198,96 @@ func Encode(req DatadPacket) []byte {
 // 	return
 // }
 
-func Decodex(reader netpoll.Reader) (h *DatadPacket, err error) {
+func ReceiveData(reader netpoll.Reader, malloc []byte) (it iter.Seq[*DatadPacket], err error) {
+	it = func(yield func(*DatadPacket) bool) {
+		for {
+			// // 检查是否有足够的数据进行读取
+			// if reader.Len() < HeaderSize {
+			// 	return
+			// }
+
+			// 读取指令码
+			cmd, err := reader.ReadByte()
+			if err != nil {
+				return
+			}
+
+			// 检查指令码是否有效
+			if cmd != CMD_DATA && cmd != CMD_STATUS && cmd != CMD_INIT {
+				// 尝试恢复读取位置
+				return
+			}
+
+			// 确保有足够的数据读取头部剩余部分
+			if reader.Len() < HeaderSize-1 {
+				// 将指令码放回并返回
+				// 这里简化处理，实际可能需要更复杂的恢复机制
+				return
+			}
+
+			// 读取头部剩余部分
+			header, err := reader.ReadBinary(HeaderSize - 1)
+			if err != nil {
+				return
+			}
+
+			// 获取数据长度
+			dataL := binary.BigEndian.Uint16(header[2:4])
+
+			// 确保有足够的数据读取数据和CRC
+			if reader.Len() < int(dataL)+2 {
+				// 数据不完整，放回已读取的数据
+				return
+			}
+
+			// 读取数据和CRC
+			payload, err := reader.ReadBinary(int(dataL) + 2)
+			if err != nil {
+				return
+			}
+
+			// 构造用于CRC计算的完整数据
+			malloc[0] = cmd
+			copy(malloc[1:HeaderSize], header)
+			payloadL := len(payload)
+			copy(malloc[HeaderSize:HeaderSize+int(dataL)], payload[:payloadL-2])
+
+			// 计算并验证CRC
+			if binary.BigEndian.Uint16(payload[payloadL-2:]) != utils.GetCRC16(malloc[:HeaderSize+int(dataL)]) {
+				// CRC校验失败，跳过这个包继续处理下一个
+				continue
+			}
+
+			// 构造数据包
+			h := &DatadPacket{
+
+				Cmd: cmd,
+
+				Data: payload[:payloadL-2],
+			}
+
+			// 通过 yield 返回数据包
+			if !yield(h) {
+				return
+			}
+		}
+	}
+	return
+}
+
+func Decodex(reader netpoll.Reader, req *DatadPacket, malloc []byte) (err error) {
 	defer reader.Release()
-	cmdCode, err := reader.ReadBinary(1)
+	malloc[0], err = reader.ReadByte()
 	if err != nil {
 		// fmt.Println("报错了？")
 		// err = reader.Release()
 		return
 	}
 
-	if cmdCode[0] != CMD_DATA &&
-		cmdCode[0] != CMD_STATUS &&
-		cmdCode[0] != CMD_INIT {
+	if malloc[0] != CMD_DATA &&
+		malloc[0] != CMD_STATUS &&
+		malloc[0] != CMD_INIT {
 		err = errors.New("invalid cmd code")
-		// reader.Release()
-		// fmt.Println(err)
 		return
 	}
 
@@ -231,22 +307,16 @@ func Decodex(reader netpoll.Reader) (h *DatadPacket, err error) {
 	}
 
 	payloadL := len(payload)
-	data := payload[:payloadL-2]
+	copy(malloc[1:HeaderSize], header)
+	copy(malloc[HeaderSize:HeaderSize+dataL], payload[:payloadL-2])
 
 	// 计算并验证CRC
-	if binary.BigEndian.Uint16(payload[payloadL-2:]) != utils.GetCRC16(slices.Concat(cmdCode, header, data)) {
+	if binary.BigEndian.Uint16(payload[payloadL-2:payloadL]) != utils.GetCRC16(malloc[:HeaderSize+dataL]) {
 		err = errors.New("CRC validation failed")
 		return
 	}
-
-	h = &DatadPacket{
-		Header{
-			Cmd:   cmdCode[0],
-			Order: binary.BigEndian.Uint16(header[1:3]),
-		},
-		data,
-	}
-	// err = reader.Release()
+	req.Cmd = malloc[0]
+	req.Data = malloc[:HeaderSize+dataL]
 	return
 }
 
@@ -254,28 +324,28 @@ func Encodex(writer netpoll.Writer, d *DatadPacket) (err error) {
 	//指令编码1字节 + 业务流水号2字节 + 指令数据内容长度2字节 + 数据 +CRC2字节
 	// data := []byte{d.Status}
 	length := len(d.Data)
-	header, _ := writer.Malloc(1 + 2 + 2 + length)
+	header, _ := writer.Malloc(1 + 2 + length)
 	//指令编码
-	header[0] = d.Header.Cmd
-	//业务流水号
-	binary.BigEndian.PutUint16(header[1:3], d.Header.Order)
+	header[0] = d.Cmd
+	// //业务流水号
+	// binary.BigEndian.PutUint16(header[1:3], d.Order)
 	// 指令数据内容长度
-	binary.BigEndian.PutUint16(header[3:5], uint16(length))
+	binary.BigEndian.PutUint16(header[1:3], uint16(length))
 	// fmt.Printf("data length: %d\n", length)
-	copy(header[5:5+length], d.Data)
+	copy(header[3:3+length], d.Data)
 	// fmt.Printf("header: %X\n", header[5:5+length])
 
-	//CRC16
-	crc16 := make([]byte, 2)
-	// fmt.Printf("writer: %x\n", header[:writer.MallocLen()])
-	// fmt.Printf("writer Len: %x\n", writer.MallocLen())
-	binary.BigEndian.PutUint16(crc16, utils.GetCRC16(header))
-	// fmt.Println(writer.MallocLen())
-	//数据
-	// writer.WriteBinary(data)
-	// fmt.Printf("crc16: %x\n", crc16)
-	// fmt.Printf("crc16: %d\n", binary.BigEndian.Uint16(crc16))
-	writer.WriteBinary(crc16)
+	// //CRC16
+	// crc16 := make([]byte, 2)
+	// // fmt.Printf("writer: %x\n", header[:writer.MallocLen()])
+	// // fmt.Printf("writer Len: %x\n", writer.MallocLen())
+	// binary.BigEndian.PutUint16(crc16, utils.GetCRC16(header))
+	// // fmt.Println(writer.MallocLen())
+	// //数据
+	// // writer.WriteBinary(data)
+	// // fmt.Printf("crc16: %x\n", crc16)
+	// // fmt.Printf("crc16: %d\n", binary.BigEndian.Uint16(crc16))
+	// writer.WriteBinary(crc16)
 	return writer.Flush()
 }
 

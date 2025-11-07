@@ -69,7 +69,7 @@ func (s *Session) SetConner(ctx context.Context, conn netpoll.Connection, role b
 	defer s.mu.Unlock()
 	// s.ConnectTime = time.Now() // 重置连接时间
 	// var notice netpoll.Connection
-	var seq uint16
+	// var seq uint16
 	switch role {
 	case pl.ROLE_SENDER:
 		if s.Sender != nil {
@@ -140,10 +140,7 @@ func (s *Session) SetConner(ctx context.Context, conn netpoll.Connection, role b
 
 	//推送连接成功状态
 	pl.Encodex(conn.Writer(), &pl.DatadPacket{
-		pl.Header{
-			Cmd:   pl.CMD_STATUS,
-			Order: seq,
-		},
+		pl.CMD_STATUS,
 		[]byte{pl.STATUS_CONNECTED},
 	})
 
@@ -161,10 +158,7 @@ func (s *Session) SetConner(ctx context.Context, conn netpoll.Connection, role b
 	s.SetStatus()
 
 	pl.Encodex(conn.Writer(), &pl.DatadPacket{
-		pl.Header{
-			Cmd:   pl.CMD_STATUS,
-			Order: seq,
-		},
+		pl.CMD_STATUS,
 		[]byte{pl.STATUS_READY},
 	})
 	// 启动超时检测
@@ -388,10 +382,7 @@ func (s *Session) handleDisconnect(status byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	resp := &pl.DatadPacket{
-		pl.Header{
-			pl.CMD_STATUS,
-			0,
-		},
+		pl.CMD_STATUS,
 		[]byte{byte(status)},
 	}
 
